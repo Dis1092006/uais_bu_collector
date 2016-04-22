@@ -1,0 +1,32 @@
+# Файл в формате YAML поэтому ОТСТУПЫ, ЗНАКИ ТИРЕ (-), ДВОЕТОЧИЯ очень важны
+# Для отступов НЕ ИСПОЛЬЗОВАТЬ ТАБУЛЯТОРЫ
+
+# Интервал перезагрузки конфигурациии (в секундах)
+reload_config_interval: 60
+
+# Уровень отладки. Влияет на содержимое сообщений в логе
+# Допустимые значения: DEBUG INFO ERROR
+log_level: DEBUG
+
+# Расположение лог-файла
+log_filename: 'uais_bu_collector.log'
+
+# Хранилище собранных данных мониторинга
+data_storage_url: 'http://10.126.200.41:3000/api/imd'
+
+# Web-сервисы
+web_services:
+- address: http://172.16.241.1/SM/ws/RemoteControl
+  login: ***
+  password: ***
+  enabled: true # false для блокировки
+  check_interval: 60 # в секундах
+
+# Серверы СУБД
+dbms_servers:
+- address: 172.16.241.26
+  login: ***
+  password: ***
+  enabled: true # false для блокировки
+  check_interval: 60 # в секундах
+
