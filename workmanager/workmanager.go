@@ -8,29 +8,11 @@ import (
 	"time"
 	"uais_bu_collector/helper"
 	"uais_bu_collector/log"
+	"uais_bu_collector/worker"
 )
 
-// Тип - идентификатор рабочего потока
-type WorkerID int
-
-// Тип - команда управления рабочим потоком
-type Command bool
-
-// Тип - рабочий поток
-type Worker struct {
-	ID            WorkerID
-	LastStateTime time.Time
-	State         bool
-	URL           string
-	Login         string
-	Password      string
-	Interval      time.Duration
-	CommandChan   chan Command
-	Req           *http.Request
-}
-
 // Тип - cписок рабочих потоков
-type WorkersList []*Worker
+type WorkersList []worker.Worker
 
 // workManager - синглтон, контролирует запуск и остановку рабочих потоков.
 type workManager struct {
@@ -39,18 +21,10 @@ type workManager struct {
 	ShutdownChannel chan string
 }
 
-type CheckResult struct {
-	CheckTime     string        `json:"time"`
-	CheckDuration time.Duration `json:"duration"`
-	Address       string        `json:"address"`
-	StatusCode    int           `json:"status"`
-	Error         string        `json:"error"`
-}
-
 var (
 	wm               workManager // Reference to the singleton
-	aliveWorkerChan  chan WorkerID
-	workerIDSequence WorkerID = 0
+	aliveWorkerChan  chan worker.WorkerID
+	workerIDSequence worker.WorkerID = 0
 )
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -122,15 +96,21 @@ func (workManager *workManager) WorkingLoop(cfg *helper.Config) {
 	log.Debugf("workingLoop, ожидание %d секунд", time.Duration(cfg.ReloadConfigInterval))
 
 	// Поток для контроля работоспособности рабочих потоков.
-	aliveWorkerChan = make(chan WorkerID)
+	aliveWorkerChan = make(chan worker.WorkerID)
 
 	// Первоначальная инициализация списка рабочих потоков
 	log.Debugf("len(cfg.Services) = %d", len(cfg.WebServices))
 	workManager.InitWorkers(cfg)
 
 	// Запуск рабочих потоков
-	for i := 0; i < len(workManager.Workers); i++ {
-		go workManager.CheckWebService(workManager.Workers[i], aliveWorkerChan, cfg.DataStorageURL)
+	counter := 0
+	for counter < len(cfg.WebServices) {
+		go workManager.CheckWebService(workManager.Workers[counter], aliveWorkerChan, cfg.DataStorageURL)
+		counter++
+	}
+	for counter < (len(cfg.WebServices) + len(cfg.DBMSServers)) {
+		go workManager.CheckDBMSServer(workManager.Workers[counter], aliveWorkerChan, cfg.DataStorageURL)
+		counter++
 	}
 
 	// Включение тикера
@@ -181,7 +161,8 @@ func (workManager *workManager) WorkingLoop(cfg *helper.Config) {
 
 				// Запуск рабочих потоков
 				for i := 0; i < len(workManager.Workers); i++ {
-					log.Debugf("workingLoop, запуск рабочего потока с номером %d", workManager.Workers[i].ID)
+					worker := workManager.Workers[i]
+					log.Debugf("workingLoop, запуск рабочего потока с номером %d", worker.GetID())
 					go workManager.CheckWebService(workManager.Workers[i], aliveWorkerChan, cfg.DataStorageURL)
 				}
 			}
@@ -191,9 +172,9 @@ func (workManager *workManager) WorkingLoop(cfg *helper.Config) {
 			log.Debugf("Контрольный сигнал от рабочего потока: %+v", workerID)
 			// Обновить данные о рабочем потоке.
 			for i := 0; i < len(workManager.Workers); i++ {
-				if workManager.Workers[i].ID == workerID {
+				if workManager.Workers[i].GetID() == workerID {
 					// Сохранить время получения контрольного сигнала.
-					workManager.Workers[i].LastStateTime = time.Now()
+					workManager.Workers[i].SetLastStateTime(time.Now())
 				}
 			}
 		}
@@ -204,22 +185,40 @@ func (workManager *workManager) WorkingLoop(cfg *helper.Config) {
 // Инициализация рабочих потоков
 //----------------------------------------------------------------------------------------------------------------------
 func (workManager *workManager) InitWorkers(cfg *helper.Config) {
-	workManager.Workers = make(WorkersList, len(cfg.WebServices))
-	for i, service := range cfg.WebServices {
+	workManager.Workers = make(WorkersList, len(cfg.WebServices) + len(cfg.DBMSServers))
+	counter := 0
+	for _, service := range cfg.WebServices {
 		//		if service.Enabled != true {
 		//			continue
 		//		}
 		workerIDSequence = workerIDSequence + 1
-		workManager.Workers[i] = new(Worker)
-		workManager.Workers[i].ID = workerIDSequence
-		workManager.Workers[i].State = service.Enabled
-		workManager.Workers[i].URL = service.Address
-		workManager.Workers[i].Login = service.Login
-		workManager.Workers[i].Password = service.Password
-		workManager.Workers[i].Interval = service.CheckInterval * time.Second
-		workManager.Workers[i].CommandChan = make(chan Command)
-		workManager.Workers[i].Req, _ = http.NewRequest("GET", workManager.Workers[i].URL, nil)
-		workManager.Workers[i].Req.SetBasicAuth(workManager.Workers[i].Login, workManager.Workers[i].Password)
+		Req, _ := http.NewRequest("GET", service.Address, nil)
+		workManager.Workers[counter] = worker.NewWebServiceWorker(
+			workerIDSequence,
+			service.Enabled,
+			service.Address,
+			service.Login,
+			service.Password,
+			service.CheckInterval * time.Second,
+			make(chan worker.Command),
+			Req)
+		counter = counter + 1
+	}
+	for _, server := range cfg.DBMSServers {
+		//		if service.Enabled != true {
+		//			continue
+		//		}
+		workerIDSequence = workerIDSequence + 1
+		workManager.Workers[counter] = worker.NewDBMSServerWorker(
+			workerIDSequence,
+			server.Enabled,
+			server.Address,
+			server.User,
+			server.Password,
+			server.Port,
+			server.CheckInterval * time.Second,
+			make(chan worker.Command))
+		counter = counter + 1
 	}
 }
 
@@ -228,14 +227,14 @@ func (workManager *workManager) InitWorkers(cfg *helper.Config) {
 //----------------------------------------------------------------------------------------------------------------------
 func (workManager *workManager) CloseWorkers() {
 	for i := 0; i < len(workManager.Workers); i++ {
-		log.Debugf("workingLoop, закрытие рабочего потока с номером %d", workManager.Workers[i].ID)
-		if workManager.Workers[i].State {
-			workManager.Workers[i].CommandChan <- true
+		log.Debugf("workingLoop, закрытие рабочего потока с номером %d", workManager.Workers[i].GetID())
+		if workManager.Workers[i].GetState() {
+			workManager.Workers[i].GetCommandChan() <- true
 			log.Debug("workingLoop, закрытие рабочих потоков, послана команда в поток")
-			<-workManager.Workers[i].CommandChan
+			<-workManager.Workers[i].GetCommandChan()
 			log.Debug("workingLoop, закрытие рабочих потоков, получена команда из потока")
-			close(workManager.Workers[i].CommandChan)
-			workManager.Workers[i].State = false
+			close(workManager.Workers[i].GetCommandChan())
+			workManager.Workers[i].SetState(false)
 		}
 	}
 }
@@ -243,36 +242,36 @@ func (workManager *workManager) CloseWorkers() {
 //----------------------------------------------------------------------------------------------------------------------
 // Проверка работоспособности указанного web-сервиса и отправка результата в data storage
 //----------------------------------------------------------------------------------------------------------------------
-func (workManager *workManager) CheckWebService(worker *Worker, outerChan chan WorkerID, dataStorageURL string) {
+func (workManager *workManager) CheckWebService(worker worker.Worker, outerChan chan worker.WorkerID, dataStorageURL string) {
 
 	if worker == nil {
 		log.Debug("worker == nil")
 		return
 	}
 
-	log.Debugf("checkWebService [%d], запущен рабочий поток, интервал %d секунд", worker.ID, int(worker.Interval.Seconds()))
+	log.Debugf("CheckWebService [%d], запущен рабочий поток, интервал %d секунд", worker.GetID(), int(worker.GetInterval().Seconds()))
 
-	wait := worker.Interval
+	wait := worker.GetInterval()
 
 	// Рабочий цикл
 	for {
-		log.Debugf("checkWebService [%d], ожидание %.3f секунд", worker.ID, wait.Seconds())
+		log.Debugf("CheckWebService [%d], ожидание %.3f секунд", worker.GetID(), wait.Seconds())
 
-		if !worker.State {
-			log.Infof("checkWebService [%d], выход из неактивного рабочего потока!", worker.ID)
+		if !worker.GetState() {
+			log.Infof("CheckWebService [%d], выход из неактивного рабочего потока!", worker.GetID())
 			return
 		}
 
 		select {
-		case <-worker.CommandChan:
-			log.Infof("checkWebService [%d], выключение рабочего потока!", worker.ID)
-			worker.CommandChan <- true
+		case <-worker.GetCommandChan():
+			log.Infof("CheckWebService [%d], выключение рабочего потока!", worker.GetID())
+			worker.GetCommandChan() <- true
 			return
 
 		case <-time.After(wait):
-			log.Debugf("checkWebService [%d], завершение ожидания", worker.ID)
-			if !worker.State {
-				log.Info("checkWebService [%d], выход из неактивного рабочего потока!")
+			log.Debugf("CheckWebService [%d], завершение ожидания", worker.GetID())
+			if !worker.GetState() {
+				log.Info("CheckWebService [%d], выход из неактивного рабочего потока!")
 				return
 			}
 			break
@@ -280,7 +279,7 @@ func (workManager *workManager) CheckWebService(worker *Worker, outerChan chan W
 
 		// Контроль необходимости закрытия
 		if workManager.Shutdown == 1 {
-			log.Debugf("checkWebService [%d], workManager.Shutdown == 1", worker.ID)
+			log.Debugf("CheckWebService [%d], workManager.Shutdown == 1", worker.GetID())
 			return
 		}
 
@@ -288,71 +287,110 @@ func (workManager *workManager) CheckWebService(worker *Worker, outerChan chan W
 		startTime := time.Now()
 
 		// Рабочая проверка
-		//checkResult := check(worker.URL, worker.Login, worker.Password)
-		checkResult := check(worker.URL, worker.Req)
+		checkResult := worker.Check()
+
 
 		// Отправить результат проверки сборщику данных
-		response, err := makeRequest("POST", dataStorageURL, checkResult)
-		if err != nil {
-			log.Errorf("checkWebService [%d], Ошибка отправки данных в data storage: %v", worker.ID, err)
-		} else {
-			defer response.Body.Close()
-		}
-		log.Debugf("checkWebService [%d], Результат отправки данных в data storage: %+v", worker.ID, response)
+		putResult(worker.GetID(), dataStorageURL + "/imd", checkResult)
 
 		// Отправить контрольный сигнал
-		outerChan <- worker.ID
+		outerChan <- worker.GetID()
 
 		// Mark the ending time
 		endTime := time.Now()
 
 		// Calculate the amount of time to wait to start workManager again.
 		duration := endTime.Sub(startTime)
-		log.Debugf("checkWebService [%d], Длительность выполнения рабочей проверки: %.3f секунд", worker.ID, duration.Seconds())
-		wait = worker.Interval - duration
-		log.Debugf("checkWebService [%d], Следующее ожидание: %.3f секунд", worker.ID, wait.Seconds())
+		log.Debugf("CheckWebService [%d], Длительность выполнения рабочей проверки: %.3f секунд", worker.GetID(), duration.Seconds())
+		wait = worker.GetInterval() - duration
+		log.Debugf("CheckWebService [%d], Следующее ожидание: %.3f секунд", worker.GetID(), wait.Seconds())
 	}
 }
 
 //----------------------------------------------------------------------------------------------------------------------
-// Проверка подключения к web-сервису
-// возвращает true — если сервис доступен, false, если нет и текст сообщения
+// Мониторинг параметров сервера СУБД
 //----------------------------------------------------------------------------------------------------------------------
-//func check(url string, login string, password string) *CheckResult {
-func check(url string, req *http.Request) *CheckResult {
-	// Подготовка результата работы функции проверки
-	var checkResult *CheckResult = new(CheckResult)
+func (workManager *workManager) CheckDBMSServer(worker worker.Worker, outerChan chan worker.WorkerID, dataStorageURL string) {
 
-	// Засечка времени
-	checkTime := time.Now()
-
-	// Попытка подключения
-	//req, _ := http.NewRequest("GET", url, nil)
-	//req.SetBasicAuth(login, password)
-	client := &http.Client{}
-	resp, err := client.Do(req)
-
-	// Контроль длительности замера
-	checkDuration := time.Since(checkTime)
-
-	// Анализ результатов попытки подключения
-	log.Infof("Проверка подключения к адресу: %s", url)
-	if err != nil {
-		checkResult.StatusCode = 0
-		checkResult.Error = err.Error()
-		log.Errorf("Ошибка! %v", err)
-	} else {
-		defer resp.Body.Close()
-		checkResult.StatusCode = resp.StatusCode
-		checkResult.Error = ""
-		log.Infof("Успешно. Длительность запроса: %.3f секунд", checkDuration.Seconds())
+	if worker == nil {
+		log.Debug("worker == nil")
+		return
 	}
 
-	// Заполнение результата проверки подключения
-	checkResult.CheckTime = checkTime.Format(time.RFC3339)
-	checkResult.CheckDuration = checkDuration
-	checkResult.Address = url
-	log.Debugf("%+v", checkResult)
+	log.Debugf("CheckDBMSServer [%d], запущен рабочий поток, интервал %d секунд", worker.GetID(), int(worker.GetInterval().Seconds()))
 
-	return checkResult
+	wait := worker.GetInterval()
+
+	// Рабочий цикл
+	for {
+		log.Debugf("CheckDBMSServer [%d], ожидание %.3f секунд", worker.GetID(), wait.Seconds())
+
+		if !worker.GetState() {
+			log.Infof("CheckDBMSServer [%d], выход из неактивного рабочего потока!", worker.GetID())
+			return
+		}
+
+		select {
+		case <-worker.GetCommandChan():
+			log.Infof("CheckDBMSServer [%d], выключение рабочего потока!", worker.GetID())
+			worker.GetCommandChan() <- true
+			return
+
+		case <-time.After(wait):
+			log.Debugf("CheckDBMSServer [%d], завершение ожидания", worker.GetID())
+			if !worker.GetState() {
+				log.Info("CheckDBMSServer [%d], выход из неактивного рабочего потока!")
+				return
+			}
+			break
+		}
+
+		// Контроль необходимости закрытия
+		if workManager.Shutdown == 1 {
+			log.Debugf("CheckDBMSServer [%d], workManager.Shutdown == 1", worker.GetID())
+			return
+		}
+
+		// Mark the starting time
+		startTime := time.Now()
+
+		// Рабочая проверка
+		checkResult := worker.Check()
+
+		log.Debugf("%+v", checkResult)
+
+		//// Отправить результат проверки сборщику данных
+		//response, err := makeRequest("POST", dataStorageURL + "/dbms", checkResult)
+		//if err != nil {
+		//	log.Errorf("CheckDBMSServer [%d], Ошибка отправки данных в data storage: %v", worker.GetID(), err)
+		//} else {
+		//	defer response.Body.Close()
+		//}
+		//log.Debugf("CheckDBMSServer [%d], Результат отправки данных в data storage: %+v", worker.GetID(), response)
+
+		// Отправить контрольный сигнал
+		outerChan <- worker.GetID()
+
+		// Mark the ending time
+		endTime := time.Now()
+
+		// Calculate the amount of time to wait to start workManager again.
+		duration := endTime.Sub(startTime)
+		log.Debugf("CheckDBMSServer [%d], Длительность выполнения рабочей проверки: %.3f секунд", worker.GetID(), duration.Seconds())
+		wait = worker.GetInterval() - duration
+		log.Debugf("CheckDBMSServer [%d], Следующее ожидание: %.3f секунд", worker.GetID(), wait.Seconds())
+	}
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Отправка результата проверки сборщику данных
+//----------------------------------------------------------------------------------------------------------------------
+func putResult(workerID worker.WorkerID, dataStorageURL string, result *worker.CheckResult) {
+	response, err := makeRequest("POST", dataStorageURL, result)
+	if err != nil {
+		log.Errorf("CheckWebService [%d], Ошибка отправки данных в data storage: %v", workerID, err)
+	} else {
+		defer response.Body.Close()
+	}
+	log.Debugf("CheckWebService [%d], Результат отправки данных в data storage: %+v", workerID, response)
 }

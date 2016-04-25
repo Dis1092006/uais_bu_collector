@@ -27,11 +27,12 @@ type WebService struct {
 
 // Структура настроек для сервера СУБД, который будет мониториться
 type DBMSServer struct {
-	Address       string        `yaml:"address"`
-	Login         string        `yaml:"login"`
-	Password      string        `yaml:"password"`
-	Enabled       bool          `yaml:"enabled"`
-	CheckInterval time.Duration `yaml:"check_interval"`
+	Address         string          `yaml:"address"`
+	User            string          `yaml:"login"`
+	Password        string          `yaml:"password"`
+	Port            int             `yaml:"port"`
+	Enabled         bool            `yaml:"enabled"`
+	CheckInterval   time.Duration   `yaml:"check_interval"`
 }
 
 // Структура для считывания конфигурационного файла
