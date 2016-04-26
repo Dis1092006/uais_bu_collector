@@ -35,14 +35,26 @@ type DBMSServer struct {
 	CheckInterval   time.Duration   `yaml:"check_interval"`
 }
 
+// Структура настроек для базы данных, которая будет мониториться
+type Database struct {
+	Address         string          `yaml:"address"`
+	Name            string          `yaml:"name"`
+	User            string          `yaml:"login"`
+	Password        string          `yaml:"password"`
+	Port            int             `yaml:"port"`
+	Enabled         bool            `yaml:"enabled"`
+	CheckInterval   time.Duration   `yaml:"check_interval"`
+}
+
 // Структура для считывания конфигурационного файла
 type Config struct {
-	ReloadConfigInterval int            `yaml:"reload_config_interval"`
-	LogLevel             string         `yaml:"log_level"`
-	LogFilename          string         `yaml:"log_filename"`
-	DataStorageURL       string         `yaml:"data_storage_url"`
-	WebServices          []WebService   `yaml:"web_services"`
-	DBMSServers          []DBMSServer   `yaml:"dbms_servers"`
+	ReloadConfigInterval    int             `yaml:"reload_config_interval"`
+	LogLevel                string          `yaml:"log_level"`
+	LogFilename             string          `yaml:"log_filename"`
+	DataStorageURL          string          `yaml:"data_storage_url"`
+	WebServices             []WebService    `yaml:"web_services"`
+	DBMSServers             []DBMSServer    `yaml:"dbms_servers"`
+	Databases               []Database      `yaml:"databases"`
 }
 
 //----------------------------------------------------------------------------------------------------------------------

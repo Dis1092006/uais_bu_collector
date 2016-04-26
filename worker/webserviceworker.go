@@ -15,7 +15,7 @@ type WebServiceWorker struct {
 	Req         *http.Request
 }
 
-func NewWebServiceWorker(id WorkerID, state bool, url string, login string, password string, interval time.Duration, channel chan Command, req *http.Request) *WebServiceWorker {
+func NewWebServiceWorker(id WorkerID, state bool, interval time.Duration, channel chan Command, url string, login string, password string, req *http.Request) *WebServiceWorker {
 	worker := WebServiceWorker {
 		BaseWorker: BaseWorker{
 			ID: id,
@@ -35,6 +35,10 @@ func NewWebServiceWorker(id WorkerID, state bool, url string, login string, pass
 
 func (worker *WebServiceWorker) GetID() WorkerID {
 	return worker.ID
+}
+
+func (worker *WebServiceWorker) GetName() string {
+	return ""
 }
 
 func (worker *WebServiceWorker) GetLastStateTime() time.Time {

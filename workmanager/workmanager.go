@@ -11,6 +11,12 @@ import (
 	"uais_bu_collector/worker"
 )
 
+// Тип - результат проверки
+type DatabaseCheckResult struct {
+	DatabaseName    string        `json:"database_name"`
+	FileName        string        `json:"file_name"`
+}
+
 // Тип - cписок рабочих потоков
 type WorkersList []worker.Worker
 
@@ -112,6 +118,10 @@ func (workManager *workManager) WorkingLoop(cfg *helper.Config) {
 		go workManager.CheckDBMSServer(workManager.Workers[counter], aliveWorkerChan, cfg.DataStorageURL)
 		counter++
 	}
+	for counter < (len(cfg.WebServices) + len(cfg.DBMSServers) + len(cfg.Databases)) {
+		go workManager.CheckDatabase(workManager.Workers[counter], aliveWorkerChan, cfg.DataStorageURL)
+		counter++
+	}
 
 	// Включение тикера
 	t := time.Tick(time.Duration(cfg.ReloadConfigInterval) * time.Second)
@@ -188,36 +198,44 @@ func (workManager *workManager) InitWorkers(cfg *helper.Config) {
 	workManager.Workers = make(WorkersList, len(cfg.WebServices) + len(cfg.DBMSServers))
 	counter := 0
 	for _, service := range cfg.WebServices {
-		//		if service.Enabled != true {
-		//			continue
-		//		}
 		workerIDSequence = workerIDSequence + 1
 		Req, _ := http.NewRequest("GET", service.Address, nil)
 		workManager.Workers[counter] = worker.NewWebServiceWorker(
 			workerIDSequence,
 			service.Enabled,
+			service.CheckInterval * time.Second,
+			make(chan worker.Command),
 			service.Address,
 			service.Login,
 			service.Password,
-			service.CheckInterval * time.Second,
-			make(chan worker.Command),
 			Req)
 		counter = counter + 1
 	}
 	for _, server := range cfg.DBMSServers {
-		//		if service.Enabled != true {
-		//			continue
-		//		}
 		workerIDSequence = workerIDSequence + 1
 		workManager.Workers[counter] = worker.NewDBMSServerWorker(
 			workerIDSequence,
 			server.Enabled,
+			server.CheckInterval * time.Second,
+			make(chan worker.Command),
 			server.Address,
 			server.User,
 			server.Password,
-			server.Port,
-			server.CheckInterval * time.Second,
-			make(chan worker.Command))
+			server.Port)
+		counter = counter + 1
+	}
+	for _, database := range cfg.Databases {
+		workerIDSequence = workerIDSequence + 1
+		workManager.Workers[counter] = worker.NewDatabaseWorker(
+			workerIDSequence,
+			database.Enabled,
+			database.CheckInterval * time.Second,
+			make(chan worker.Command),
+			database.Address,
+			database.Name,
+			database.User,
+			database.Password,
+			database.Port)
 		counter = counter + 1
 	}
 }
@@ -379,6 +397,84 @@ func (workManager *workManager) CheckDBMSServer(worker worker.Worker, outerChan 
 		log.Debugf("CheckDBMSServer [%d], Длительность выполнения рабочей проверки: %.3f секунд", worker.GetID(), duration.Seconds())
 		wait = worker.GetInterval() - duration
 		log.Debugf("CheckDBMSServer [%d], Следующее ожидание: %.3f секунд", worker.GetID(), wait.Seconds())
+	}
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Мониторинг параметров базы данных
+//----------------------------------------------------------------------------------------------------------------------
+func (workManager *workManager) CheckDatabase(worker worker.Worker, outerChan chan worker.WorkerID, dataStorageURL string) {
+
+	if worker == nil {
+		log.Debug("worker == nil")
+		return
+	}
+
+	log.Debugf("CheckDatabase [%d], запущен рабочий поток, интервал %d секунд", worker.GetID(), int(worker.GetInterval().Seconds()))
+
+	wait := worker.GetInterval()
+
+	// Рабочий цикл
+	for {
+		log.Debugf("CheckDatabase [%d], ожидание %.3f секунд", worker.GetID(), wait.Seconds())
+
+		if !worker.GetState() {
+			log.Infof("CheckDatabase [%d], выход из неактивного рабочего потока!", worker.GetID())
+			return
+		}
+
+		select {
+		case <-worker.GetCommandChan():
+			log.Infof("CheckDatabase [%d], выключение рабочего потока!", worker.GetID())
+			worker.GetCommandChan() <- true
+			return
+
+		case <-time.After(wait):
+			log.Debugf("CheckDatabase [%d], завершение ожидания", worker.GetID())
+			if !worker.GetState() {
+				log.Info("CheckDatabase [%d], выход из неактивного рабочего потока!")
+				return
+			}
+			break
+		}
+
+		// Контроль необходимости закрытия
+		if workManager.Shutdown == 1 {
+			log.Debugf("CheckDatabase [%d], workManager.Shutdown == 1", worker.GetID())
+			return
+		}
+
+		// Mark the starting time
+		startTime := time.Now()
+
+		// Рабочая проверка
+		checkResult := worker.Check()
+
+		log.Debugf("%+v", checkResult)
+
+		// Отправить результат проверки сборщику данных
+		var result DatabaseCheckResult
+		result.DatabaseName = worker.GetName()
+		result.FileName = checkResult.Status
+		response, err := makeRequest("PUT", dataStorageURL + "/backups/last", result)
+		if err != nil {
+			log.Errorf("CheckDatabase [%d], Ошибка отправки данных в data storage: %v", worker.GetID(), err)
+		} else {
+			defer response.Body.Close()
+		}
+		log.Debugf("CheckDatabase [%d], Результат отправки данных в data storage: %+v", worker.GetID(), response)
+
+		// Отправить контрольный сигнал
+		outerChan <- worker.GetID()
+
+		// Mark the ending time
+		endTime := time.Now()
+
+		// Calculate the amount of time to wait to start workManager again.
+		duration := endTime.Sub(startTime)
+		log.Debugf("CheckDatabase [%d], Длительность выполнения рабочей проверки: %.3f секунд", worker.GetID(), duration.Seconds())
+		wait = worker.GetInterval() - duration
+		log.Debugf("CheckDatabase [%d], Следующее ожидание: %.3f секунд", worker.GetID(), wait.Seconds())
 	}
 }
 

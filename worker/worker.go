@@ -31,6 +31,7 @@ type BaseWorker struct {
 type Worker interface {
 	Check()         *CheckResult
 	GetID()            WorkerID
+	GetName()         string
 	GetLastStateTime() time.Time
 	SetLastStateTime(time time.Time)
 	GetState()         bool

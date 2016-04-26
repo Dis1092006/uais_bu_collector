@@ -19,7 +19,7 @@ web_services:
 - address: http://172.16.241.1/SM/ws/RemoteControl
   login: ***
   password: ***
-  enabled: true # false для блокировки
+  enabled: false # false для блокировки
   check_interval: 60 # в секундах
 
 # Серверы СУБД
@@ -27,6 +27,17 @@ dbms_servers:
 - address: 172.16.241.26
   login: ***
   password: ***
+  port: 1433
+  enabled: false # false для блокировки
+  check_interval: 600 # в секундах
+
+# Базы данных
+databases:
+- address: 10.126.200.35
+  name: SM
+  login: ***
+  password: ***
+  port: 1433
   enabled: true # false для блокировки
   check_interval: 60 # в секундах
 

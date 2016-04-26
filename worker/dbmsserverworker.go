@@ -16,7 +16,7 @@ type DBMSServerWorker struct {
 	Port        int
 }
 
-func NewDBMSServerWorker(id WorkerID, state bool, address string, user string, password string, port int, interval time.Duration, channel chan Command) *DBMSServerWorker {
+func NewDBMSServerWorker(id WorkerID, state bool, interval time.Duration, channel chan Command, address string, user string, password string, port int) *DBMSServerWorker {
 	return &DBMSServerWorker{
 		BaseWorker: BaseWorker{
 			ID: id,
@@ -34,6 +34,10 @@ func NewDBMSServerWorker(id WorkerID, state bool, address string, user string, p
 
 func (worker *DBMSServerWorker) GetID() WorkerID {
 	return worker.ID
+}
+
+func (worker *DBMSServerWorker) GetName() string {
+	return ""
 }
 
 func (worker *DBMSServerWorker) GetLastStateTime() time.Time {
