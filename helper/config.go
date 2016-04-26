@@ -38,7 +38,8 @@ type DBMSServer struct {
 // Структура настроек для базы данных, которая будет мониториться
 type Database struct {
 	Address         string          `yaml:"address"`
-	Name            string          `yaml:"name"`
+	DBId            int             `yaml:"id"`
+	DBName          string          `yaml:"name"`
 	User            string          `yaml:"login"`
 	Password        string          `yaml:"password"`
 	Port            int             `yaml:"port"`

@@ -37,7 +37,11 @@ func (worker *WebServiceWorker) GetID() WorkerID {
 	return worker.ID
 }
 
-func (worker *WebServiceWorker) GetName() string {
+func (worker *WebServiceWorker) GetDBId() int {
+	return 0
+}
+
+func (worker *WebServiceWorker) GetDBName() string {
 	return ""
 }
 

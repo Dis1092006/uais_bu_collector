@@ -36,7 +36,11 @@ func (worker *DBMSServerWorker) GetID() WorkerID {
 	return worker.ID
 }
 
-func (worker *DBMSServerWorker) GetName() string {
+func (worker *DBMSServerWorker) GetDBId() int {
+	return 0
+}
+
+func (worker *DBMSServerWorker) GetDBName() string {
 	return ""
 }
 

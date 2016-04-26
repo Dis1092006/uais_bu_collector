@@ -13,8 +13,8 @@ import (
 
 // Тип - результат проверки
 type DatabaseCheckResult struct {
-	DatabaseName    string        `json:"database_name"`
-	FileName        string        `json:"file_name"`
+	DatabaseId  int     `json:"database_id"`
+	FileName    string  `json:"file_name"`
 }
 
 // Тип - cписок рабочих потоков
@@ -170,10 +170,18 @@ func (workManager *workManager) WorkingLoop(cfg *helper.Config) {
 				workManager.InitWorkers(cfg)
 
 				// Запуск рабочих потоков
-				for i := 0; i < len(workManager.Workers); i++ {
-					worker := workManager.Workers[i]
-					log.Debugf("workingLoop, запуск рабочего потока с номером %d", worker.GetID())
-					go workManager.CheckWebService(workManager.Workers[i], aliveWorkerChan, cfg.DataStorageURL)
+				counter := 0
+				for counter < len(cfg.WebServices) {
+					go workManager.CheckWebService(workManager.Workers[counter], aliveWorkerChan, cfg.DataStorageURL)
+					counter++
+				}
+				for counter < (len(cfg.WebServices) + len(cfg.DBMSServers)) {
+					go workManager.CheckDBMSServer(workManager.Workers[counter], aliveWorkerChan, cfg.DataStorageURL)
+					counter++
+				}
+				for counter < (len(cfg.WebServices) + len(cfg.DBMSServers) + len(cfg.Databases)) {
+					go workManager.CheckDatabase(workManager.Workers[counter], aliveWorkerChan, cfg.DataStorageURL)
+					counter++
 				}
 			}
 
@@ -195,7 +203,7 @@ func (workManager *workManager) WorkingLoop(cfg *helper.Config) {
 // Инициализация рабочих потоков
 //----------------------------------------------------------------------------------------------------------------------
 func (workManager *workManager) InitWorkers(cfg *helper.Config) {
-	workManager.Workers = make(WorkersList, len(cfg.WebServices) + len(cfg.DBMSServers))
+	workManager.Workers = make(WorkersList, len(cfg.WebServices) + len(cfg.DBMSServers) + len(cfg.Databases))
 	counter := 0
 	for _, service := range cfg.WebServices {
 		workerIDSequence = workerIDSequence + 1
@@ -232,7 +240,8 @@ func (workManager *workManager) InitWorkers(cfg *helper.Config) {
 			database.CheckInterval * time.Second,
 			make(chan worker.Command),
 			database.Address,
-			database.Name,
+			database.DBId,
+			database.DBName,
 			database.User,
 			database.Password,
 			database.Port)
@@ -306,7 +315,6 @@ func (workManager *workManager) CheckWebService(worker worker.Worker, outerChan 
 
 		// Рабочая проверка
 		checkResult := worker.Check()
-
 
 		// Отправить результат проверки сборщику данных
 		putResult(worker.GetID(), dataStorageURL + "/imd", checkResult)
@@ -454,15 +462,9 @@ func (workManager *workManager) CheckDatabase(worker worker.Worker, outerChan ch
 
 		// Отправить результат проверки сборщику данных
 		var result DatabaseCheckResult
-		result.DatabaseName = worker.GetName()
+		result.DatabaseId = worker.GetDBId()
 		result.FileName = checkResult.Status
-		response, err := makeRequest("PUT", dataStorageURL + "/backups/last", result)
-		if err != nil {
-			log.Errorf("CheckDatabase [%d], Ошибка отправки данных в data storage: %v", worker.GetID(), err)
-		} else {
-			defer response.Body.Close()
-		}
-		log.Debugf("CheckDatabase [%d], Результат отправки данных в data storage: %+v", worker.GetID(), response)
+		putDatabaseCheckResult(worker.GetID(), dataStorageURL + "/backups/last", &result)
 
 		// Отправить контрольный сигнал
 		outerChan <- worker.GetID()
@@ -489,4 +491,17 @@ func putResult(workerID worker.WorkerID, dataStorageURL string, result *worker.C
 		defer response.Body.Close()
 	}
 	log.Debugf("CheckWebService [%d], Результат отправки данных в data storage: %+v", workerID, response)
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Отправка результата проверки сборщику данных
+//----------------------------------------------------------------------------------------------------------------------
+func putDatabaseCheckResult(workerID worker.WorkerID, dataStorageURL string, result *DatabaseCheckResult) {
+	response, err := makeRequest("PUT", dataStorageURL, result)
+	if err != nil {
+		log.Errorf("CheckDatabase [%d], Ошибка отправки данных в data storage: %v", workerID, err)
+	} else {
+		defer response.Body.Close()
+	}
+	log.Debugf("CheckDatabase [%d], Результат отправки данных в data storage: %+v", workerID, response)
 }

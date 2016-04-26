@@ -11,13 +11,14 @@ import (
 type DatabaseWorker struct {
 	BaseWorker
 	Address     string
-	Name        string
+	DBId        int
+	DBName      string
 	User        string
 	Password    string
 	Port        int
 }
 
-func NewDatabaseWorker(id WorkerID, state bool, interval time.Duration, channel chan Command, address string, name string, user string, password string, port int) *DatabaseWorker {
+func NewDatabaseWorker(id WorkerID, state bool, interval time.Duration, channel chan Command, address string, dbid int, dbname string, user string, password string, port int) *DatabaseWorker {
 	worker := DatabaseWorker {
 		BaseWorker: BaseWorker{
 			ID: id,
@@ -27,7 +28,8 @@ func NewDatabaseWorker(id WorkerID, state bool, interval time.Duration, channel 
 			CommandChan: channel,
 		},
 		Address: address,
-		Name: name,
+		DBId: dbid,
+		DBName: dbname,
 		User: user,
 		Password: password,
 		Port: port,
@@ -39,8 +41,12 @@ func (worker *DatabaseWorker) GetID() WorkerID {
 	return worker.ID
 }
 
-func (worker *DatabaseWorker) GetName() string {
-	return worker.Name
+func (worker *DatabaseWorker) GetDBId() int {
+	return worker.DBId
+}
+
+func (worker *DatabaseWorker) GetDBName() string {
+	return worker.DBName
 }
 
 func (worker *DatabaseWorker) GetLastStateTime() time.Time {
@@ -93,6 +99,7 @@ func (worker *DatabaseWorker) Check() *CheckResult {
 		-------------------------------------------------------------------------------------------
 		SELECT
 		   A.last_db_backup_date,
+		   B.type,
 		   B.backup_size,
 		   B.physical_device_name
 		FROM
@@ -103,8 +110,7 @@ func (worker *DatabaseWorker) Check() *CheckResult {
 		   FROM    msdb.dbo.backupmediafamily
 		       INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id
 		   WHERE
-		       msdb..backupset.type = 'D'
-		       AND msdb.dbo.backupset.database_name = ?1
+		       msdb.dbo.backupset.database_name = ?1
 		   GROUP BY
 		       msdb.dbo.backupset.database_name
 		   ) AS A
@@ -121,26 +127,28 @@ func (worker *DatabaseWorker) Check() *CheckResult {
 		   msdb.dbo.backupmediafamily.logical_device_name,
 		   msdb.dbo.backupmediafamily.physical_device_name,
 		   msdb.dbo.backupset.name AS backupset_name,
+		   msdb.dbo.backupset.type,
 		   msdb.dbo.backupset.description
 		FROM   msdb.dbo.backupmediafamily
 		   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id
-		WHERE  msdb..backupset.type = 'D'
 		   ) AS B
 		   ON A.[database_name] = B.[database_name] AND A.[last_db_backup_date] = B.[backup_finish_date]
 		ORDER BY
 		   A.database_name
    `
 	// Запрос данных
-	row := conn.QueryRow(query, worker.Name)
+	row := conn.QueryRow(query, worker.DBName)
 	var last_db_backup_date string
+	var backup_type string
 	var backup_size int
 	var physical_device_name string
-	err = row.Scan(&last_db_backup_date, &backup_size, &physical_device_name)
+	err = row.Scan(&last_db_backup_date, &backup_type, &backup_size, &physical_device_name)
 	if err != nil {
 		log.Fatal("Scan failed:", err.Error())
 	}
 	//log.Debug("server:%s\n", server)
 	log.Debugf("last_db_backup_date:%v\n", last_db_backup_date)
+	log.Debugf("backup_type:%v\n", backup_type)
 	log.Debugf("backup_size:%v\n", backup_size)
 	log.Debugf("physical_device_name:%v\n", physical_device_name)
 
