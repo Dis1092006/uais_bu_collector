@@ -9,12 +9,16 @@ import (
 	"uais_bu_collector/helper"
 	"uais_bu_collector/log"
 	"uais_bu_collector/worker"
+	"database/sql"
 )
 
 // Тип - результат проверки
 type DatabaseCheckResult struct {
 	DatabaseId  int     `json:"database_id"`
 	FileName    string  `json:"file_name"`
+	BackupDate  string  `json:"backup_date"`
+	BackupType  string  `json:"backup_type"`
+	BackupSize  int     `json:"backup_size"`
 }
 
 // Тип - cписок рабочих потоков
@@ -411,35 +415,38 @@ func (workManager *workManager) CheckDBMSServer(worker worker.Worker, outerChan 
 //----------------------------------------------------------------------------------------------------------------------
 // Мониторинг параметров базы данных
 //----------------------------------------------------------------------------------------------------------------------
-func (workManager *workManager) CheckDatabase(worker worker.Worker, outerChan chan worker.WorkerID, dataStorageURL string) {
+func (workManager *workManager) CheckDatabase(w interface{}, outerChan chan worker.WorkerID, dataStorageURL string) {
 
-	if worker == nil {
+	if w == nil {
 		log.Debug("worker == nil")
 		return
 	}
 
-	log.Debugf("CheckDatabase [%d], запущен рабочий поток, интервал %d секунд", worker.GetID(), int(worker.GetInterval().Seconds()))
+	var databaseWorker *worker.DatabaseWorker
+	databaseWorker = w.(*worker.DatabaseWorker)
 
-	wait := worker.GetInterval()
+	log.Debugf("CheckDatabase [%d], запущен рабочий поток, интервал %d секунд", databaseWorker.GetID(), int(databaseWorker.GetInterval().Seconds()))
+
+	wait := databaseWorker.GetInterval()
 
 	// Рабочий цикл
 	for {
-		log.Debugf("CheckDatabase [%d], ожидание %.3f секунд", worker.GetID(), wait.Seconds())
+		log.Debugf("CheckDatabase [%d], ожидание %.3f секунд", databaseWorker.GetID(), wait.Seconds())
 
-		if !worker.GetState() {
-			log.Infof("CheckDatabase [%d], выход из неактивного рабочего потока!", worker.GetID())
+		if !databaseWorker.GetState() {
+			log.Infof("CheckDatabase [%d], выход из неактивного рабочего потока!", databaseWorker.GetID())
 			return
 		}
 
 		select {
-		case <-worker.GetCommandChan():
-			log.Infof("CheckDatabase [%d], выключение рабочего потока!", worker.GetID())
-			worker.GetCommandChan() <- true
+		case <-databaseWorker.GetCommandChan():
+			log.Infof("CheckDatabase [%d], выключение рабочего потока!", databaseWorker.GetID())
+			databaseWorker.GetCommandChan() <- true
 			return
 
 		case <-time.After(wait):
-			log.Debugf("CheckDatabase [%d], завершение ожидания", worker.GetID())
-			if !worker.GetState() {
+			log.Debugf("CheckDatabase [%d], завершение ожидания", databaseWorker.GetID())
+			if !databaseWorker.GetState() {
 				log.Info("CheckDatabase [%d], выход из неактивного рабочего потока!")
 				return
 			}
@@ -448,7 +455,7 @@ func (workManager *workManager) CheckDatabase(worker worker.Worker, outerChan ch
 
 		// Контроль необходимости закрытия
 		if workManager.Shutdown == 1 {
-			log.Debugf("CheckDatabase [%d], workManager.Shutdown == 1", worker.GetID())
+			log.Debugf("CheckDatabase [%d], workManager.Shutdown == 1", databaseWorker.GetID())
 			return
 		}
 
@@ -456,27 +463,28 @@ func (workManager *workManager) CheckDatabase(worker worker.Worker, outerChan ch
 		startTime := time.Now()
 
 		// Рабочая проверка
-		checkResult := worker.Check()
+		//checkResult := worker.Check()
+		checkResult := DatabaseCheck(databaseWorker)
 
 		log.Debugf("%+v", checkResult)
 
 		// Отправить результат проверки сборщику данных
-		var result DatabaseCheckResult
-		result.DatabaseId = worker.GetDBId()
-		result.FileName = checkResult.Status
-		putDatabaseCheckResult(worker.GetID(), dataStorageURL + "/backups/last", &result)
+		//var result DatabaseCheckResult
+		//result.DatabaseId = worker.GetDBId()
+		//result.FileName = checkResult.Status
+		putDatabaseCheckResult(databaseWorker.GetID(), dataStorageURL + "/backups/last", checkResult)
 
 		// Отправить контрольный сигнал
-		outerChan <- worker.GetID()
+		outerChan <- databaseWorker.GetID()
 
 		// Mark the ending time
 		endTime := time.Now()
 
 		// Calculate the amount of time to wait to start workManager again.
 		duration := endTime.Sub(startTime)
-		log.Debugf("CheckDatabase [%d], Длительность выполнения рабочей проверки: %.3f секунд", worker.GetID(), duration.Seconds())
-		wait = worker.GetInterval() - duration
-		log.Debugf("CheckDatabase [%d], Следующее ожидание: %.3f секунд", worker.GetID(), wait.Seconds())
+		log.Debugf("CheckDatabase [%d], Длительность выполнения рабочей проверки: %.3f секунд", databaseWorker.GetID(), duration.Seconds())
+		wait = databaseWorker.GetInterval() - duration
+		log.Debugf("CheckDatabase [%d], Следующее ожидание: %.3f секунд", databaseWorker.GetID(), wait.Seconds())
 	}
 }
 
@@ -491,6 +499,92 @@ func putResult(workerID worker.WorkerID, dataStorageURL string, result *worker.C
 		defer response.Body.Close()
 	}
 	log.Debugf("CheckWebService [%d], Результат отправки данных в data storage: %+v", workerID, response)
+}
+
+//----------------------------------------------------------------------------------------------------------------------
+// Получение информации о последнем архиве базы данных
+// возвращает true — если сервис доступен, false, если нет и текст сообщения
+//----------------------------------------------------------------------------------------------------------------------
+func DatabaseCheck(worker *worker.DatabaseWorker) *DatabaseCheckResult {
+	// Подготовка результата работы функции проверки
+	var checkResult *DatabaseCheckResult = new(DatabaseCheckResult)
+
+	// Подключение к серверу
+	connString := fmt.Sprintf("server=%s;user id=%s;password=%s;port=%d;encrypt=disable", worker.Address, worker.User, worker.Password, worker.Port)
+	conn, err := sql.Open("mssql", connString)
+	if err != nil {
+		log.Fatal("Open connection failed:", err.Error())
+	}
+	defer conn.Close()
+
+	// Текст запроса
+	query := `
+		-------------------------------------------------------------------------------------------
+		--Most Recent Database Backup for Each Database - Detailed
+		-------------------------------------------------------------------------------------------
+		SELECT
+		   A.last_db_backup_date,
+		   B.type,
+		   B.backup_size,
+		   B.physical_device_name
+		FROM
+		   (
+		   SELECT
+		       msdb.dbo.backupset.database_name,
+		       MAX(msdb.dbo.backupset.backup_finish_date) AS last_db_backup_date
+		   FROM    msdb.dbo.backupmediafamily
+		       INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id
+		   WHERE
+		       msdb.dbo.backupset.database_name = ?1
+		   GROUP BY
+		       msdb.dbo.backupset.database_name
+		   ) AS A
+
+		   LEFT JOIN
+
+		   (
+		   SELECT
+		   msdb.dbo.backupset.database_name,
+		   msdb.dbo.backupset.backup_start_date,
+		   msdb.dbo.backupset.backup_finish_date,
+		   msdb.dbo.backupset.expiration_date,
+		   msdb.dbo.backupset.backup_size,
+		   msdb.dbo.backupmediafamily.logical_device_name,
+		   msdb.dbo.backupmediafamily.physical_device_name,
+		   msdb.dbo.backupset.name AS backupset_name,
+		   msdb.dbo.backupset.type,
+		   msdb.dbo.backupset.description
+		FROM   msdb.dbo.backupmediafamily
+		   INNER JOIN msdb.dbo.backupset ON msdb.dbo.backupmediafamily.media_set_id = msdb.dbo.backupset.media_set_id
+		   ) AS B
+		   ON A.[database_name] = B.[database_name] AND A.[last_db_backup_date] = B.[backup_finish_date]
+		ORDER BY
+		   A.database_name
+   `
+	// Запрос данных
+	row := conn.QueryRow(query, worker.DBName)
+	var last_db_backup_date string
+	var backup_type string
+	var backup_size int
+	var physical_device_name string
+	err = row.Scan(&last_db_backup_date, &backup_type, &backup_size, &physical_device_name)
+	if err != nil {
+		log.Fatal("Scan failed:", err.Error())
+	}
+	//log.Debug("server:%s\n", server)
+	log.Debugf("last_db_backup_date:%v\n", last_db_backup_date)
+	log.Debugf("backup_type:%v\n", backup_type)
+	log.Debugf("backup_size:%v\n", backup_size)
+	log.Debugf("physical_device_name:%v\n", physical_device_name)
+
+	// Заполнение результата проверки подключения
+	checkResult.DatabaseId = worker.DBId
+	checkResult.FileName = physical_device_name
+	checkResult.BackupDate = last_db_backup_date
+	checkResult.BackupType = backup_type
+	checkResult.BackupSize = backup_size
+
+	return checkResult
 }
 
 //----------------------------------------------------------------------------------------------------------------------
